@@ -1,0 +1,13 @@
+HIGH: int
+LOW: int
+
+BOARD: int
+BCM: int
+
+INPUT: int
+OUTPUT: int
+
+def setmode(mode: int, /) -> None: ...
+def setup(pin: int, dir: int, /) -> None: ...
+def output(pin: int, level: int, /) -> None: ...
+def cleanup() -> None: ...
