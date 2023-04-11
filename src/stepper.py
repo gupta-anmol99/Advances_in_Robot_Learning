@@ -1,6 +1,23 @@
+"""Stepper motor control module.
+
+This module defines several classes to enable precise angular control of a NEMA17 stepper motor
+using A4988 stepper motor driver and the AS5600 rotational encoder.
+
+Examples:
+    >>> stepper = Stepper(10, 11)
+    >>> mux = EncoderMultiplexer(0, 1, 2)
+    >>> with mux.enable(0) as enc:
+            stepper.to_angle(enc, 100.0)
+
+"""
+
+from __future__ import annotations
+
 from enum import IntEnum
 from time import sleep
 from typing import ContextManager
+from types import TracebackType
+from warnings import warn
 
 from RPi import GPIO  # pyright: reportMissingModuleSource=false
 from smbus2 import SMBus
@@ -14,69 +31,119 @@ class Direction(IntEnum):
 
 
 class Encoder:
-    def __init__(self, pwr_pin: int, bus: SMBus, addr: int = 0x36):
-        self._pwr_pin = pwr_pin
-        self._bus = bus
-        self._addr = addr
-        self._enabled = False
+    """An encoder to detect the angle of a stepper motor shaft.
 
-        GPIO.setup(pwr_pin, GPIO.OUTPUT)
-        GPIO.output(pwr_pin, GPIO.LOW)
+    This implementation uses the AS5600 positional encoder to detect the angle of the motor shaft.
+    It communicates using the I2C bus and has a fixed address, which requires a multiplexer in
+    order to support multiple sensors.
+
+    Args:
+        idx: The port on the I2C multiplexer
+        mux: The I2C multiplexer
+        addr: The address of the encoder on the I2C bus
+    """
+
+    def __init__(self, idx: int, mux: EncoderMultiplexer, addr: int = 0x36):
+        self._idx = idx
+        self._mux = mux
+        self._addr = addr
 
     @property
     def angle(self) -> float:
-        theta1 = self._bus.read_byte_data(self._addr, 0x0E)
-        theta2 = self._bus.read_byte_data(self._addr, 0x0F)
-        return (theta1 << 8) + theta2
+        """The angle of the motor shaft detected by the encoder."""
+
+        theta1 = self._mux.bus.read_byte_data(self._addr, 0x0E)
+        theta2 = self._mux.bus.read_byte_data(self._addr, 0x0F)
+        raw_angle = (theta1 << 8) + theta2
+        offset_angle = raw_angle - self.zero
+
+        return offset_angle % 360  # Ensure angle is constrained [0, 360]
 
     @property
-    def is_enabled(self) -> float:
-        return self._enabled
+    def zero(self) -> float:
+        """The zero angle of the encoder."""
 
-    def enable(self) -> None:
-        if self._enabled is not True:
-            GPIO.output(self._pwr_pin, GPIO.HIGH)
+        return self._mux.offsets[self._idx]
 
-        self._enabled = True
-
-    def disable(self) -> None:
-        if self._enabled is not False:
-            GPIO.output(self._pwr_pin, GPIO.LOW)
-
-        self._enabled = False
+    @zero.setter
+    def zero(self, offset: float) -> None:
+        self._mux.offsets[self._idx] = offset
 
 
-class _EncoderManagerContext(ContextManager[Encoder]):
-    def __init__(self, encoders: list[Encoder], index: int):
-        self._encoders = encoders
-        self._index = index
+class _EncoderContext(ContextManager[Encoder]):
+    """Context manager for an encoder.
+
+    This class is responsible for enabling the selected port on a I2C multiplexer circuit. This
+    operation is defined as a context manager so that selection does not occur until the context
+    is entered.
+
+    Args:
+        mux: The I2C multiplexer
+        port: The multiplexer port to enable
+    """
+
+    def __init__(self, mux: EncoderMultiplexer, port: int):
+        self._mux = mux
+        self._port = port
 
     def __enter__(self) -> Encoder:
-        for encoder in self._encoders:
-            encoder.disable()
+        pin0 = self._port & 0x100
+        pin1 = self._port & 0x010
+        pin2 = self._port & 0x001
 
-        self._encoders[self._index].enable()
+        GPIO.output(self._mux._pin0, GPIO.HIGH if pin0 > 0 else GPIO.LOW)
+        GPIO.output(self._mux._pin1, GPIO.HIGH if pin1 > 0 else GPIO.LOW)
+        GPIO.output(self._mux._pin2, GPIO.HIGH if pin2 > 0 else GPIO.LOW)
 
-        return self._encoders[self._index]
+        return Encoder(self._port, self._mux)
 
-    def __exit__(self):
-        pass
-
-
-class EncoderManager:
-    def __init__(self, *encoders: Encoder):
-        self._encoders = list(encoders)
-
-    def enable(self, index: int) -> _EncoderManagerContext:
-        return _EncoderManagerContext(self._encoders, index)
+    def __exit__(
+        self,
+        __exc_type: type[BaseException] | None,
+        __exc_value: BaseException | None,
+        __traceback: TracebackType | None,
+    ) -> bool | None:
+        return None
 
 
-def _step_motor(pin: int, *, delay: float = 0.0025) -> None:
-    GPIO.output(pin, GPIO.HIGH)
-    sleep(delay)
+class EncoderMultiplexer:
+    """A multiplexer for managing multiple AS5600 encoders on a single I2C bus.
 
-    GPIO.output(pin, GPIO.LOW)
-    sleep(delay)
+    This multiplexer is capable of selecting between 8 different encoders.
+
+    Args:
+        mux_pin0: The first multiplexer selector pin
+        mux_pin1: The second multiplexer selector pin
+        mux_pin2: The third multiplexer selector pin
+        bus: The I2C bus device path
+
+    """
+
+    def __init__(self, mux_pin0: int, mux_pin1: int, mux_pin2: int, bus: str = "/dev/i2c-1"):
+        GPIO.setup(mux_pin0, GPIO.OUTPUT)
+        GPIO.setup(mux_pin1, GPIO.OUTPUT)
+        GPIO.setup(mux_pin2, GPIO.OUTPUT)
+
+        GPIO.output(mux_pin0, GPIO.LOW)
+        GPIO.output(mux_pin1, GPIO.LOW)
+        GPIO.output(mux_pin2, GPIO.LOW)
+
+        self._pin0 = mux_pin0
+        self._pin1 = mux_pin1
+        self._pin2 = mux_pin2
+        self._bus = SMBus(bus)
+        self._offsets = [0.0] * 8
+
+    @property
+    def bus(self) -> SMBus:
+        return self._bus
+
+    @property
+    def offsets(self) -> list[float]:
+        return self._offsets
+
+    def select(self, port: int) -> _EncoderContext:
+        return _EncoderContext(self, port)
 
 
 class Stepper:
@@ -85,49 +152,42 @@ class Stepper:
     Args:
         step_pin: The pin to use for sending step signals
         dir_pin: The pin to use to for selecting direction
-        enc: The encoder tracking the position of the motor shaft
         dir: The initial direction of rotation
-        tol: Angle tolerance while moving
     """
 
     def __init__(
         self,
         step_pin: int,
         dir_pin: int,
-        enc: Encoder,
         dir: Direction = Direction.CW,
-        tol: float = 0.1,
     ):
         self._step_pin = step_pin
         self._dir_pin = dir_pin
-        self._enc = enc
         self._dir = dir
         self._offset = 0.0
-        self._tol = abs(tol)
 
         GPIO.setup(step_pin, GPIO.OUTPUT)
         GPIO.setup(dir_pin, GPIO.OUTPUT)
 
-    @property
-    def angle(self) -> float:
-        return self._enc.angle - self._offset
+    def step(self, *, delay: float = 0.0025) -> None:
+        """Move the stepper motor shaft one step.
 
-    @angle.setter
-    def angle(self, value: float) -> None:
-        self._enc.enable()
+        The direction of movement is controlled by setting the direction property on the motor.
 
-        if self.angle < value:
-            self.direction = Direction.CW
-        else:
-            self.direction = Direction.CCW
+        Args:
+            delay: How long to wait before changing pin states
+        """
 
-        while abs(self.angle - value) > self._tol:
-            _step_motor(self._step_pin)
+        pin_states = [GPIO.HIGH, GPIO.LOW]
 
-        self._enc.disable()
+        for pin_state in pin_states:
+            GPIO.output(self._step_pin, pin_state)
+            sleep(delay)
 
     @property
     def direction(self) -> Direction:
+        """The direction of movement for the motor."""
+
         return self._dir
 
     @direction.setter
@@ -137,10 +197,30 @@ class Stepper:
 
         self._dir = value
 
-    @property
-    def zero(self) -> float:
-        return self._offset
+    def to_angle(self, enc: Encoder, angle: float, *, tol: float = 1.8) -> None:
+        """Set the stepper motor to a given angle.
 
-    @zero.setter
-    def zero(self, value: float) -> None:
-        self._offset = value
+        Args:
+            enc: The encoder measuring the angle of the motor shaft
+            angle: The target shaft angle
+            tol: The maximum difference between the target angle and the actual angle
+        """
+
+        tol = abs(tol)
+
+        if enc.angle < angle:
+            self.direction = Direction.CW
+        else:
+            self.direction = Direction.CCW
+
+        last_angle = enc.angle
+        self.step()
+
+        if enc.angle == last_angle:
+            warn("Encoder angle did not change after step, you may have the wrong encoder selected")
+
+        while abs(enc.angle - angle) > tol:
+            self.step()
+
+
+__all__ = ["Encoder", "EncoderMultiplexer", "Stepper"]
