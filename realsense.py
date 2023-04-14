@@ -44,7 +44,8 @@ try:
         color_frame = frames.get_color_frame()
         if not depth_frame or not color_frame:
             continue
-        print(depth_frame.get_distance(240, 240))
+        #print(depth_frame.get_distance(240, 240))
+        print(pixels, depth_pix)
 
         # Convert images to numpy arrays
         depth_image = np.asanyarray(depth_frame.get_data())
@@ -62,8 +63,15 @@ try:
         cv2.imwrite(name, color_image)
 
         detection, bbs = object_detector.detect_person(name)
+        pixels = []
+        depth_pix = []
         for bb in bbs:
             print(bb)
+            center_x = (bb[0] + bb[2])/2
+            center_y = (bb[1] + bb[3])/2
+            pixels.append((center_x, center_y))
+            depth_pix.append(depth_frame.get_distance(center_x, center_y))
+
         #print('detection done') 
         detection_shape = detection.shape 
 
@@ -79,6 +87,7 @@ try:
         #    images = np.hstack((color_image, depth_colormap))
             #images = depth_colormap
 
+        print(pixels, depth_pix)
 
         # Show images
         cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
