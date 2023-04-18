@@ -45,7 +45,6 @@ try:
         if not depth_frame or not color_frame:
             continue
         #print(depth_frame.get_distance(240, 240))
-        print(pixels, depth_pix)
 
         # Convert images to numpy arrays
         depth_image = np.asanyarray(depth_frame.get_data())
@@ -71,9 +70,9 @@ try:
             center_y = (bb[1] + bb[3])/2
             pixels.append((center_x, center_y))
             depth_pix.append(depth_frame.get_distance(center_x, center_y))
-
-        #print('detection done') 
+    
         detection_shape = detection.shape 
+        #print('detection done') 
 
         # If depth and color resolutions are different, resize color image to match depth image for display
         if depth_colormap_dim != color_colormap_dim:
