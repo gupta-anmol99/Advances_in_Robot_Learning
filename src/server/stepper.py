@@ -159,10 +159,14 @@ class Stepper:
         self,
         step_pin: int,
         dir_pin: int,
+        enc_multiplexer: EncoderMultiplexer,
+        enc_idx: int,
         dir: Direction = Direction.CW,
     ):
         self._step_pin = step_pin
         self._dir_pin = dir_pin
+        self._enc_idx = enc_idx
+        self._multiplexer = enc_multiplexer
         self._dir = dir
         self._offset = 0.0
 
@@ -197,7 +201,7 @@ class Stepper:
 
         self._dir = value
 
-    def to_angle(self, enc: Encoder, angle: float, *, tol: float = 1.8) -> None:
+    def to_angle(self, angle: float, *, tol: float = 1.8) -> None:
         """Set the stepper motor to a given angle.
 
         Args:
@@ -208,19 +212,22 @@ class Stepper:
 
         tol = abs(tol)
 
-        if enc.angle < angle:
-            self.direction = Direction.CW
-        else:
-            self.direction = Direction.CCW
+        with self._multiplexer.select(self._enc_idx) as enc:
+            if enc.angle < angle:
+                self.direction = Direction.CW
+            else:
+                self.direction = Direction.CCW
 
-        last_angle = enc.angle
-        self.step()
-
-        if enc.angle == last_angle:
-            warn("Encoder angle did not change after step, you may have the wrong encoder selected")
-
-        while abs(enc.angle - angle) > tol:
+            last_angle = enc.angle
             self.step()
+
+            if enc.angle == last_angle:
+                warn(
+                    "Encoder angle did not change after step, you may have the wrong encoder selected"
+                )
+
+            while abs(enc.angle - angle) > tol:
+                self.step()
 
 
 __all__ = ["Encoder", "EncoderMultiplexer", "Stepper"]
