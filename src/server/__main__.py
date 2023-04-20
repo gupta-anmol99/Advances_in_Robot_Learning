@@ -15,7 +15,7 @@ def main():
     base_motor = Stepper(3, 4, multiplexer, enc_idx=0)
     elev_motor = Stepper(5, 6, multiplexer, enc_idx=1)
 
-    server_addr = ("0.0.0.0", 80007)
+    server_addr = ("192.168.1.10", 80007) #0.0.0.0
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(server_addr)
 
